@@ -1019,7 +1019,6 @@ fn zirOptionalType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.E
 fn zirPtrType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const tracy = trace(@src());
     defer tracy.end();
-    _ = block;
 
     const inst_data = sema.code.instructions.items(.data)[inst].ptr_type;
     const extra = sema.code.extraData(Zir.Inst.PtrType, inst_data.payload_index);
@@ -1036,10 +1035,9 @@ fn zirPtrType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
 
     const abi_align: u16 = if (inst_data.flags.has_align) blk: {
         const ref = @intToEnum(Zir.Inst.Ref, sema.code.extra[extra_i]);
-        _ = ref;
         extra_i += 1;
-        // TODO
-        break :blk 0;
+        const abi_align = (try sema.resolveInt(block, ref, .u16_type, "pointer alignment must be comptime-known")) orelse 0;
+        break :blk @intCast(u16, abi_align);
     } else 0;
 
     const address_space: std.builtin.AddressSpace = if (inst_data.flags.has_addrspace) blk: {
@@ -1052,18 +1050,16 @@ fn zirPtrType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
 
     const bit_offset: u16 = if (inst_data.flags.has_bit_range) blk: {
         const ref = @intToEnum(Zir.Inst.Ref, sema.code.extra[extra_i]);
-        _ = ref;
         extra_i += 1;
-        // TODO
-        break :blk 0;
+        const bit_offset = (try sema.resolveInt(block, ref, .u16_type, "pointer bit-offset must be comptime-known")) orelse 0;
+        break :blk @intCast(u16, bit_offset);
     } else 0;
 
     const host_size: u16 = if (inst_data.flags.has_bit_range) blk: {
         const ref = @intToEnum(Zir.Inst.Ref, sema.code.extra[extra_i]);
-        _ = ref;
         extra_i += 1;
-        // TODO
-        break :blk 0;
+        const host_size = (try sema.resolveInt(block, ref, .u16_type, "pointer host size must be comptime-known")) orelse 0;
+        break :blk @intCast(u16, host_size);
     } else 0;
 
     return try sema.get(.{ .pointer_type = .{
