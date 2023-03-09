@@ -168,8 +168,8 @@ fn analyzeBodyInner(
             .anyframe_type                => .none,
             .array_cat                    => .none,
             .array_mul                    => .none,
-            .array_type                   => .none,
-            .array_type_sentinel          => .none,
+            .array_type                   => try sema.zirArrayType(block, inst),
+            .array_type_sentinel          => try sema.zirArrayTypeSentinel(block, inst),
             .vector_type                  => .none,
             .as                           => try sema.zirAs(block, inst),
             .as_node                      => try sema.zirAsNode(block, inst),
@@ -720,6 +720,29 @@ pub fn resolveType(sema: *Sema, zir_ref: Zir.Inst.Ref) Index {
     return index;
 }
 
+fn resolveInt(
+    sema: *Sema,
+    block: *Block,
+    zir_ref: Zir.Inst.Ref,
+    dest_ty: Index,
+    reason: []const u8,
+) !?u64 {
+    const index = sema.resolveIndex(zir_ref);
+    return sema.analyzeAsInt(block, index, dest_ty, reason);
+}
+
+fn analyzeAsInt(
+    sema: *Sema,
+    block: *Block,
+    src: Index,
+    dest_ty: Index,
+    reason: []const u8,
+) !?u64 {
+    _ = reason;
+    const coerced = try sema.coerce(block, dest_ty, src);
+    return sema.indexToKey(coerced).getUnsignedInt();
+}
+
 fn resolveBody(
     sema: *Sema,
     block: *Block,
@@ -754,22 +777,55 @@ pub fn analyzeBodyBreak(
 //
 //
 
+fn zirArrayType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Bin, inst_data.payload_index).data;
+    const len = (try sema.resolveInt(block, extra.lhs, .usize_type, "array length must be comptime-known")) orelse return .none;
+    const elem_type = sema.resolveType(extra.rhs);
+
+    return try sema.get(.{ .array_type = .{
+        .len = len,
+        .child = elem_type,
+        .sentinel = .none,
+    } });
+}
+
+fn zirArrayTypeSentinel(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.ArrayTypeSentinel, inst_data.payload_index).data;
+    const len = (try sema.resolveInt(block, extra.len, .usize_type, "array length must be comptime-known")) orelse return .none;
+    const elem_type = sema.resolveType(extra.elem_type);
+
+    const uncasted_sentinel = sema.resolveIndex(extra.sentinel);
+    const sentinel = try sema.coerce(block, elem_type, uncasted_sentinel);
+
+    return try sema.get(.{ .array_type = .{
+        .len = len,
+        .child = elem_type,
+        .sentinel = sentinel,
+    } });
+}
+
 fn zirAs(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const tracy = trace(@src());
     defer tracy.end();
-    _ = block;
 
     const bin_inst = sema.code.instructions.items(.data)[inst].bin;
     const dest_ty = sema.resolveType(bin_inst.lhs);
     const operand = sema.resolveIndex(bin_inst.rhs);
 
-    return try sema.mod.ip.coerce(sema.gpa, sema.arena, dest_ty, operand, builtin.target);
+    return try sema.coerce(block, dest_ty, operand);
 }
 
 fn zirAsNode(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const tracy = trace(@src());
     defer tracy.end();
-    _ = block;
 
     const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
     // const src = inst_data.src();
@@ -778,7 +834,7 @@ fn zirAsNode(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!I
     const dest_ty = sema.resolveType(extra.dest_type);
     const operand = sema.resolveIndex(extra.operand);
 
-    return try sema.mod.ip.coerce(sema.gpa, sema.arena, dest_ty, operand, builtin.target);
+    return try sema.coerce(block, dest_ty, operand);
 }
 
 /// Only called for equality operators. See also `zirCmp`.
@@ -1045,6 +1101,20 @@ fn zirBoolToInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Erro
         .bool_true => .one,
         else => unreachable,
     };
+}
+
+//
+//
+//
+
+fn coerce(
+    sema: *Sema,
+    block: *Block,
+    dest_ty: Index,
+    inst: Index,
+) Allocator.Error!Index {
+    _ = block;
+    return try sema.mod.ip.coerce(sema.gpa, sema.arena, dest_ty, inst, builtin.target);
 }
 
 //

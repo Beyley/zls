@@ -352,4 +352,5 @@ pub fn semaDecl(mod: *Module, decl_index: Decl.Index) !void {
     const body = zir.extra[extra.end..][0..extra.data.body_len];
     const result_ref = (try sema.analyzeBodyBreak(&block_scope, body)).?.operand;
     decl.index = sema.resolveIndex(result_ref);
+    decl.analysis = .complete;
 }
