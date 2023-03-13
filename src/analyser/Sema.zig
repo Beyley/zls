@@ -170,7 +170,7 @@ fn analyzeBodyInner(
             .array_mul                    => .none,
             .array_type                   => try sema.zirArrayType(block, inst),
             .array_type_sentinel          => try sema.zirArrayTypeSentinel(block, inst),
-            .vector_type                  => .none,
+            .vector_type                  => try sema.zirVectorType(block, inst),
             .as                           => try sema.zirAs(block, inst),
             .as_node                      => try sema.zirAsNode(block, inst),
             .as_shift_operand             => .none,
@@ -809,6 +809,24 @@ fn zirArrayTypeSentinel(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Alloca
         .len = len,
         .child = elem_type,
         .sentinel = sentinel,
+    } });
+}
+
+fn zirVectorType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Bin, inst_data.payload_index).data;
+    const len = (try sema.resolveInt(block, extra.lhs, .u32_type, "vector length must be comptime-known")) orelse return .none;
+    const elem_type = sema.resolveType(extra.rhs);
+
+    // TODO error invalid vector element type
+    // try sema.checkVectorElemType(block, elem_type_src, elem_type);
+
+    return try sema.get(.{ .vector_type = .{
+        .len = @intCast(u32, len),
+        .child = elem_type,
     } });
 }
 
