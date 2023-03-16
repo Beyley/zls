@@ -141,7 +141,7 @@ pub fn deinit(sema: *Sema) void {
     sema.* = undefined;
 }
 
-const always_noreturn: Allocator.Error!Zir.Inst.Index = @as(Zir.Inst.Index, undefined);
+const always_noreturn: Allocator.Error!Zir.Inst.Index = @as(Zir.Inst.Index, std.math.maxInt(u32));
 
 fn analyzeBodyInner(
     sema: *Sema,
@@ -599,8 +599,11 @@ fn analyzeBodyInner(
                 const else_body = sema.code.extra[extra.end + then_body.len ..][0..extra.data.else_body_len];
 
                 const cond = sema.resolveIndex(extra.data.condition);
-                // TODO handle unknown value
-                const inline_body = if (cond == .bool_true) then_body else else_body;
+                assert(sema.indexToKey(cond).typeOf() == .bool_type);
+                const inline_body = if (cond == .bool_true) then_body else if (cond == .bool_false) else_body else {
+                    std.debug.panic("TODO: comptime branch on unknown value", .{});
+                    break always_noreturn;
+                };
 
                 const break_data = (try sema.analyzeBodyBreak(block, inline_body)) orelse break always_noreturn;
                 if (inst == break_data.block_inst) {

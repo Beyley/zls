@@ -1824,6 +1824,8 @@ pub fn coerce(
     if (dest_ty == inst_ty) return inst;
 
     const result_value = try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
+
+    // TODO add typed undefined value
     if (inst_ty == .undefined_type) return result_value;
 
     const inst_ty_key = ip.indexToKey(inst_ty);
@@ -1973,7 +1975,9 @@ pub fn coerce(
     }
 
     // TODO: compile error
-    return result_value;
+    std.debug.panic("error: '{}' cannot be coerced to type '{}'", .{ inst.fmt(ip.*), dest_key.fmt(ip.*) });
+
+    // return result_value;
 }
 
 pub fn cast(ip: *InternPool, gpa: Allocator, destination_ty: Index, source_ty: Index, target: std.Target) Allocator.Error!Index {

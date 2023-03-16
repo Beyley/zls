@@ -1,13 +1,42 @@
-const foo = blk: {
-    //^^^ (comptime_int)(3)
+const alpha = blk: {
+    //^^^^^ (comptime_int)(3)
     break :blk 3;
 };
 
-const bar = blk: {
-    //^^^ (bool)(false)
+const beta = blk: {
+    //^^^^ (bool)(false)
     if (true) {
         break :blk false;
     } else {
         break :blk true;
     }
 };
+
+const gamma = blk: {
+    //^^^^^ (@TypeOf(null))(null)
+    if (true) {
+        break :blk null;
+    } else {
+        break :blk true;
+    }
+};
+
+// TODO
+// const delta = blk: {
+//     //^^^^^ ()()
+//     if (false) {
+//         break :blk false;
+//     }
+//     unreachable;
+// };
+
+// TODO
+// const epsilon = blk: {
+//     //^^^^^^^ (?bool)((unknown value))
+//     const unknown: bool = undefined;
+//     if (unknown) {
+//         break :blk null;
+//     } else {
+//         break :blk true;
+//     }
+// };
