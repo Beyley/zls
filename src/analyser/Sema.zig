@@ -259,8 +259,8 @@ fn analyzeBodyInner(
             .type_info                    => .none,
             .size_of                      => .none,
             .bit_size_of                  => .none,
-            .typeof                       => .none,
-            .typeof_builtin               => .none,
+            .typeof                       => try sema.zirTypeof(block, inst),
+            .typeof_builtin               => try sema.zirTypeofBuiltin(block, inst),
             .typeof_log2_int_type         => .none,
             .xor                          => .none,
             .struct_init_empty            => .none,
@@ -378,8 +378,10 @@ fn analyzeBodyInner(
             .trap           => break always_noreturn,
             // zig fmt: on
 
-            .extended => switch (datas[inst].extended.opcode) {
-                // zig fmt: off
+            .extended => ext: {
+                const extended = datas[inst].extended;
+                break :ext switch (extended.opcode) {
+                    // zig fmt: off
                     .variable              => .none,
                     .struct_decl           => .none,
                     .enum_decl             => .none,
@@ -395,7 +397,7 @@ fn analyzeBodyInner(
                     .builtin_extern        => .none,
                     .@"asm"                => .none,
                     .asm_expr              => .none,
-                    .typeof_peer           => .none,
+                    .typeof_peer           => try sema.zirTypeofPeer(        block, extended),
                     .compile_log           => .none,
                     .min_multi             => .none,
                     .max_multi             => .none,
@@ -431,13 +433,14 @@ fn analyzeBodyInner(
                     .in_comptime           => .none,
                     // zig fmt: on
 
-                .fence,
-                .set_float_mode,
-                .set_align_stack,
-                .set_cold,
-                .breakpoint,
-                => continue,
-                .errdefer_err_code => unreachable, // never appears in a body
+                    .fence,
+                    .set_float_mode,
+                    .set_align_stack,
+                    .set_cold,
+                    .breakpoint,
+                    => continue,
+                    .errdefer_err_code => unreachable, // never appears in a body
+                };
             },
 
             // Instructions that we know can *never* be noreturn based solely on
@@ -1092,6 +1095,56 @@ fn zirPtrType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
         .is_allowzero = inst_data.flags.is_allowzero,
         .address_space = address_space,
     } });
+}
+
+fn zirTypeof(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    _ = block;
+    const zir_datas = sema.code.instructions.items(.data);
+    const inst_data = zir_datas[inst].un_node;
+    const operand = sema.resolveIndex(inst_data.operand);
+    return sema.indexToKey(operand).typeOf();
+}
+
+fn zirTypeofBuiltin(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const pl_node = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Block, pl_node.payload_index);
+    const body = sema.code.extra[extra.end..][0..extra.data.body_len];
+
+    const operand = try sema.resolveBody(block, body);
+    if (operand == .none) return .none;
+    return sema.indexToKey(operand).typeOf();
+}
+
+fn zirTypeofPeer(
+    sema: *Sema,
+    block: *Block,
+    extended: Zir.Inst.Extended.InstData,
+) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const extra = sema.code.extraData(Zir.Inst.TypeOfPeer, extended.operand);
+    const body = sema.code.extra[extra.data.body_index..][0..extra.data.body_len];
+
+    _ = try sema.analyzeBodyBreak(block, body);
+
+    const args = sema.code.refSlice(extra.end, extended.small);
+
+    const types = try sema.gpa.alloc(Index, args.len);
+    defer sema.gpa.free(types);
+
+    for (args, types) |arg_ref, *ty| {
+        const arg = sema.resolveIndex(arg_ref);
+        ty.* = sema.indexToKey(arg).typeOf();
+    }
+
+    return sema.mod.ip.resolvePeerTypes(sema.gpa, types, builtin.target);
 }
 
 fn zirBoolToInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
