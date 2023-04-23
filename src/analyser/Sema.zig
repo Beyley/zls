@@ -949,13 +949,13 @@ fn zirCmpEq(
 fn zirDeclVal(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const inst_data = sema.code.instructions.items(.data)[inst].str_tok;
     const decl_name = inst_data.get(sema.code);
-    const decl_index = try sema.lookupIdentifier(block, decl_name);
+    const decl_index = (try sema.lookupIdentifier(block, decl_name)) orelse return .none;
     try sema.ensureDeclAnalyzed(decl_index);
     const decl = sema.mod.declPtr(decl_index);
     return decl.index;
 }
 
-fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !DeclIndex {
+fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !?DeclIndex {
     var namespace_index = block.namespace;
 
     while (namespace_index != .none) {
@@ -965,7 +965,9 @@ fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !DeclIndex {
         }
         namespace_index = namespace.parent;
     }
-    unreachable; // AstGen detects use of undeclared identifier errors.
+    // TODO lazily analyse symbols in the root scope
+    return null;
+    // unreachable; // AstGen detects use of undeclared identifier errors.
 }
 
 fn lookupInNamespace(
@@ -1042,6 +1044,7 @@ fn fieldVal(
                 }
                 break :blk true;
             },
+            .unknown => return .unknown_unknown,
             else => false,
         },
         .pointer_type => |pointer_info| blk: {
@@ -1785,7 +1788,7 @@ fn scanDecl(sema: *Sema, iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) 
         },
     };
     const is_exported = export_bit and decl_name_index != 0;
-    // if (kind == .@"usingnamespace") try namespace.usingnamespace_set.ensureUnusedCapacity(gpa, 1);
+    if (kind == .@"usingnamespace") try namespace.usingnamespace_set.ensureUnusedCapacity(gpa, 1);
 
     // We create a Decl for it regardless of analysis status.
     const gop = try namespace.decls.getOrPutContextAdapted(
