@@ -298,7 +298,7 @@ pub fn semaDecl(mod: *Module, decl_index: DeclIndex) !void {
         .namespace = decl.src_namespace,
         .is_comptime = true,
     };
-    // defer block_scope.params.deinit(mod.gpa);
+    defer block_scope.params.deinit(mod.gpa);
 
     const zir_block_index = Module.zirBlockIndex(decl, mod);
     const inst_data = zir_datas[zir_block_index].pl_node;

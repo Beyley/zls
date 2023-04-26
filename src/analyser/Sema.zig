@@ -220,8 +220,8 @@ fn analyzeBodyInner(
             .field_val                    => try sema.zirFieldVal(block, inst),
             .field_val_named              => .none,
             .field_call_bind              => .none,
-            .func                         => .none,
-            .func_inferred                => .none,
+            .func                         => try sema.zirFunc(block, inst, false),
+            .func_inferred                => try sema.zirFunc(block, inst, true),
             .func_fancy                   => .none,
             .import                       => .none,
             .indexable_ptr_len            => .none,
@@ -522,9 +522,11 @@ fn analyzeBodyInner(
                 continue;
             },
             .param => {
+                try sema.zirParam(block, inst, false);
                 continue;
             },
             .param_comptime => {
+                try sema.zirParam(block, inst, true);
                 continue;
             },
             .param_anytype => {
@@ -640,6 +642,28 @@ fn analyzeBodyInner(
     return result;
 }
 
+fn zirParam(
+    sema: *Sema,
+    block: *Block,
+    inst: Zir.Inst.Index,
+    comptime_syntax: bool,
+) Allocator.Error!void {
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_tok;
+    // const src = inst_data.src();
+    const extra = sema.code.extraData(Zir.Inst.Param, inst_data.payload_index);
+    const param_name = sema.code.nullTerminatedString(extra.data.name);
+    const body = sema.code.extra[extra.end..][0..extra.data.body_len];
+
+    const param_ty_inst = try sema.resolveBody(block, body);
+    const param_ty = try sema.coerce(block, .type_type, param_ty_inst);
+
+    try block.params.append(sema.gpa, .{
+        .ty = param_ty,
+        .is_comptime = comptime_syntax,
+        .name = param_name,
+    });
+}
+
 fn zirBreak(sema: *Sema, start_block: *Block, inst: Zir.Inst.Index) !Zir.Inst.Index {
     const tracy = trace(@src());
     defer tracy.end();
@@ -685,6 +709,7 @@ fn zirBlock(sema: *Sema, parent_block: *Block, inst: Zir.Inst.Index, force_compt
         .label = &label,
         .is_comptime = parent_block.is_comptime or force_comptime,
     };
+    defer child_block.params.deinit(sema.gpa);
 
     if (child_block.is_comptime) {
         return try sema.resolveBody(&child_block, body);
@@ -1157,6 +1182,61 @@ fn fieldVal(
     }
 }
 
+fn zirFunc(
+    sema: *Sema,
+    block: *Block,
+    inst: Zir.Inst.Index,
+    inferred_error_set: bool,
+) Allocator.Error!Index {
+    _ = inferred_error_set;
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Func, inst_data.payload_index);
+    // const target = sema.mod.getTarget();
+    // const ret_ty_src: LazySrcLoc = .{ .node_offset_fn_type_ret_ty = inst_data.src_node };
+
+    var extra_index = extra.end;
+
+    const ret_ty: Index = switch (extra.data.ret_body_len) {
+        0 => .void_type,
+        1 => blk: {
+            const ret_ty_ref = @intToEnum(Zir.Inst.Ref, sema.code.extra[extra_index]);
+            extra_index += 1;
+            break :blk sema.resolveType(ret_ty_ref);
+        },
+        else => blk: {
+            const ret_ty_body = sema.code.extra[extra_index..][0..extra.data.ret_body_len];
+            extra_index += ret_ty_body.len;
+
+            // TODO
+            break :blk .unknown_unknown;
+        },
+    };
+
+    var src_locs: Zir.Inst.Func.SrcLocs = undefined;
+    const has_body = extra.data.body_len != 0;
+    if (has_body) {
+        extra_index += extra.data.body_len;
+        src_locs = sema.code.extraData(Zir.Inst.Func.SrcLocs, extra_index).data;
+    }
+
+    const args = try sema.arena.alloc(Index, block.params.items.len);
+    defer sema.arena.free(args);
+
+    for (block.params.items, args) |param, *out_arg| {
+        out_arg.* = param.ty;
+    }
+
+    return try sema.get(InternPool.Key{
+        .function_type = InternPool.Function{
+            .args = args,
+            .return_type = ret_ty,
+        },
+    });
+}
+
 fn zirInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const tracy = trace(@src());
     defer tracy.end();
@@ -1587,6 +1667,7 @@ pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) !void {
         .src_decl = decl_index,
         .is_comptime = true,
     };
+    defer block_scope.params.deinit(sema.gpa);
 
     try struct_obj.fields.ensureTotalCapacity(sema.gpa, fields_len);
 
