@@ -169,7 +169,7 @@ fn analyzeBodyInner(
             .alloc_mut                    => .none,
             .alloc_comptime_mut           => .none,
             .make_ptr_const               => .none,
-            .anyframe_type                => .none,
+            .anyframe_type                => try sema.zirAnyframeType(block, inst),
             .array_cat                    => .none,
             .array_mul                    => .none,
             .array_type                   => try sema.zirArrayType(block, inst),
@@ -811,6 +811,18 @@ pub fn analyzeBodyBreak(
 //
 //
 //
+
+fn zirAnyframeType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+    _ = block;
+
+    const inst_data = sema.code.instructions.items(.data)[inst].un_node;
+    // const operand_src: LazySrcLoc = .{ .node_offset_anyframe_type = inst_data.src_node };
+    const return_type = sema.resolveType(inst_data.operand);
+
+    return sema.get(.{ .anyframe_type = .{ .child = return_type } });
+}
 
 fn zirArrayType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
     const tracy = trace(@src());
