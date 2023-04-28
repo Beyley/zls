@@ -212,7 +212,7 @@ fn analyzeBodyInner(
             .err_union_code_ptr           => .none,
             .err_union_payload_unsafe     => .none,
             .err_union_payload_unsafe_ptr => .none,
-            .error_union_type             => .none,
+            .error_union_type             => try sema.zirErrorUnionType(block, inst),
             .error_value                  => .none,
             .field_ptr                    => .none,
             .field_ptr_init               => .none,
@@ -335,9 +335,9 @@ fn analyzeBodyInner(
             .round => .none,
             .trunc => .none,
 
-            .error_set_decl      => .none,
-            .error_set_decl_anon => .none,
-            .error_set_decl_func => .none,
+            .error_set_decl      => try sema.zirErrorSetDecl(block, inst, .parent),
+            .error_set_decl_anon => try sema.zirErrorSetDecl(block, inst, .anon),
+            .error_set_decl_func => try sema.zirErrorSetDecl(block, inst, .func),
 
             .add       => .none,
             .addwrap   => .none,
@@ -998,6 +998,36 @@ fn zirDeclVal(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
     return decl.index;
 }
 
+fn zirErrorUnionType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+    _ = block;
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Bin, inst_data.payload_index).data;
+    // const lhs_src: LazySrcLoc = .{ .node_offset_bin_lhs = inst_data.src_node };
+    // const rhs_src: LazySrcLoc = .{ .node_offset_bin_rhs = inst_data.src_node };
+    var error_set = sema.resolveType(extra.lhs);
+    const payload = sema.resolveType(extra.rhs);
+
+    switch (sema.indexToKey(error_set)) {
+        .error_set_type => {},
+        .unknown_value => {
+            error_set = Index.unknown_type;
+        },
+        else => {
+            std.debug.panic("expected error set type, found '{}'", .{
+                error_set.fmt(sema.mod.ip),
+            });
+        },
+    }
+
+    return try sema.get(.{ .error_union_type = .{
+        .error_set_type = error_set,
+        .payload_type = payload,
+    } });
+}
+
 fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !?DeclIndex {
     var namespace_index = block.namespace;
 
@@ -1447,6 +1477,43 @@ fn zirBoolToInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Erro
         .bool_true => .one,
         else => unreachable,
     };
+}
+
+fn zirErrorSetDecl(
+    sema: *Sema,
+    block: *Block,
+    inst: Zir.Inst.Index,
+    name_strategy: Zir.Inst.NameStrategy,
+) Allocator.Error!Index {
+    _ = name_strategy;
+    _ = block;
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const gpa = sema.gpa;
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    // const src = inst_data.src();
+    const extra = sema.code.extraData(Zir.Inst.ErrorSetDecl, inst_data.payload_index);
+
+    var names = try gpa.alloc(Index, extra.data.fields_len);
+    defer gpa.free(names);
+
+    var extra_index = @intCast(u32, extra.end);
+    var name_index: usize = 0;
+    const extra_index_end = extra_index + (extra.data.fields_len * 2);
+    while (extra_index < extra_index_end) : (extra_index += 2) { // +2 to skip over doc_string
+        defer name_index += 1;
+        const str_index = sema.code.extra[extra_index];
+        const bytes_index = try sema.get(.{ .bytes = sema.code.nullTerminatedString(str_index) });
+        names[name_index] = bytes_index;
+    }
+
+    return try sema.get(InternPool.Key{
+        .error_set_type = InternPool.ErrorSet{
+            .owner_decl = .none, // TODO
+            .names = names,
+        },
+    });
 }
 
 fn zirStructDecl(

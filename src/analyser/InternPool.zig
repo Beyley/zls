@@ -82,6 +82,7 @@ pub const ErrorUnion = packed struct {
 };
 
 pub const ErrorSet = struct {
+    owner_decl: OptionalDeclIndex,
     /// every element is guaranteed to be .bytes
     names: []const Index,
 };
@@ -953,6 +954,11 @@ pub const Key = union(enum) {
                 return error_union_info.payload_type;
             },
             .error_set_type => |error_set_info| {
+                if (error_set_info.owner_decl.unwrap()) |decl_index| {
+                    const decl = ip.getDecl(decl_index);
+                    try writer.writeAll(decl.name);
+                    return null;
+                }
                 const names = error_set_info.names;
                 try writer.writeAll("error{");
                 for (names, 0..) |name, i| {
@@ -3413,13 +3419,18 @@ test "error set type" {
     const bar_name = try ip.get(gpa, .{ .bytes = "bar" });
     const baz_name = try ip.get(gpa, .{ .bytes = "baz" });
 
-    const empty_error_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{} } });
+    const empty_error_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{},
+    } });
 
     const foo_bar_baz_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
         .names = &.{ foo_name, bar_name, baz_name },
     } });
 
     const foo_bar_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
         .names = &.{ foo_name, bar_name },
     } });
 
@@ -3437,7 +3448,10 @@ test "error union type" {
     var ip = try InternPool.init(gpa);
     defer ip.deinit(gpa);
 
-    const empty_error_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{} } });
+    const empty_error_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{},
+    } });
     const bool_type = try ip.get(gpa, .{ .simple_type = .bool });
 
     const @"error{}!bool" = try ip.get(gpa, .{ .error_union_type = .{
@@ -3681,10 +3695,22 @@ test "coerceInMemoryAllowed error set" {
     const bar_name = try ip.get(gpa, .{ .bytes = "bar" });
     const baz_name = try ip.get(gpa, .{ .bytes = "baz" });
 
-    const foo_bar_baz_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{ baz_name, bar_name, foo_name } } });
-    const foo_bar_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{ foo_name, bar_name } } });
-    const foo_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{foo_name} } });
-    const empty_set = try ip.get(gpa, .{ .error_set_type = .{ .names = &.{} } });
+    const foo_bar_baz_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{ baz_name, bar_name, foo_name },
+    } });
+    const foo_bar_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{ foo_name, bar_name },
+    } });
+    const foo_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{foo_name},
+    } });
+    const empty_set = try ip.get(gpa, .{ .error_set_type = .{
+        .owner_decl = .none,
+        .names = &.{},
+    } });
 
     try expect(try ip.coerceInMemoryAllowed(gpa, arena, .anyerror_type, foo_bar_baz_set, true, builtin.target) == .ok);
     try expect(try ip.coerceInMemoryAllowed(gpa, arena, .anyerror_type, foo_bar_set, true, builtin.target) == .ok);
