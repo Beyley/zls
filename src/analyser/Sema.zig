@@ -1687,7 +1687,7 @@ pub fn analyzeStructDecl(
     new_decl: *Decl,
     inst: Zir.Inst.Index,
     struct_obj: *InternPool.Struct,
-) !void {
+) Allocator.Error!void {
     const extended: Zir.Inst.Extended.InstData = sema.code.instructions.items(.data)[inst].extended;
     assert(extended.opcode == .struct_decl);
     const small = @bitCast(Zir.Inst.StructDecl.Small, extended.small);
@@ -1717,7 +1717,7 @@ pub fn analyzeStructDecl(
     _ = try sema.scanNamespace(namespace, struct_obj.namespace, extra_index, decls_len, new_decl);
 }
 
-pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) !void {
+pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) Allocator.Error!void {
     const decl_index = struct_obj.owner_decl.unwrap().?;
     const namespace = sema.mod.namespacePtr(struct_obj.namespace);
     const zir: Zir = namespace.handle.zir;

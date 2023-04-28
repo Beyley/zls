@@ -23,7 +23,7 @@ ip: InternPool,
 allocated_namespaces: std.SegmentedList(Namespace, 0) = .{},
 document_store: *DocumentStore,
 
-pub fn init(allocator: Allocator, document_store: *DocumentStore) !Module {
+pub fn init(allocator: Allocator, document_store: *DocumentStore) Allocator.Error!Module {
     return .{
         .gpa = allocator,
         .ip = try InternPool.init(allocator),
@@ -210,7 +210,7 @@ pub fn get(mod: *Module, key: InternPool.Key) Allocator.Error!InternPool.Index {
     return mod.ip.get(mod.gpa, key);
 }
 
-pub fn semaFile(mod: *Module, handle: *Handle) !void {
+pub fn semaFile(mod: *Module, handle: *Handle) Allocator.Error!void {
     // TODO also support .outdated which may required require storing the old Ast as well
     assert(handle.zir_status == .done);
     std.debug.assert(handle.root_decl == .none);
@@ -261,7 +261,7 @@ pub fn semaFile(mod: *Module, handle: *Handle) !void {
     try sema.analyzeStructDecl(decl, Zir.main_struct_inst, struct_obj);
 }
 
-pub fn semaDecl(mod: *Module, decl_index: DeclIndex) !void {
+pub fn semaDecl(mod: *Module, decl_index: DeclIndex) Allocator.Error!void {
     const decl = mod.declPtr(decl_index);
     decl.analysis = .in_progress;
 
