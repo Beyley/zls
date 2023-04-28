@@ -55,9 +55,9 @@ fn testSemanticAnalysis(source: []const u8) !void {
     };
 
     // add the given source file to the document store
-    _ = try document_store.openDocument(test_uri, try allocator.dupeZ(u8, source));
-    const handle = document_store.handles.get(test_uri).?;
+    const handle = try document_store.openDocument(test_uri, try allocator.dupeZ(u8, source));
     std.debug.assert(handle.zir_status == .done);
+    std.debug.assert(handle.tree.errors == 0);
     std.debug.assert(!handle.zir.hasCompileErrors());
 
     // create a Module that stores data which is used across multiple files
@@ -66,24 +66,25 @@ fn testSemanticAnalysis(source: []const u8) !void {
     defer mod.deinit();
 
     // add the given file to the module
-    // this will also analyse all declarations in the root scope
+    // this will also analyse all declarations in the top-level/root scope
     try mod.semaFile(handle);
     std.debug.assert(handle.root_decl != .none);
 
+    // get the decl that represents the top-level/root scope
     const decl_index: InternPool.DeclIndex = handle.root_decl.unwrap().?;
     const decl: *InternPool.Decl = mod.declPtr(decl_index);
-    defer mod.destroyDecl(decl_index);
+    defer mod.destroyDecl(decl_index); // TODO this should not be necessary
 
+    // every zig file is also a struct
     const struct_index: InternPool.StructIndex = mod.ip.indexToKey(decl.index).struct_type;
     const struct_obj: *InternPool.Struct = mod.ip.getStruct(struct_index);
     const namespace: *Module.Namespace = mod.namespacePtr(struct_obj.namespace);
 
     // this will print all top-level declarations and their value
-    for (namespace.decls.keys()) |namespace_decl_index| {
-        const namespace_decl = mod.declPtr(namespace_decl_index);
-        _ = namespace_decl;
-        // std.debug.print("{s:<18} {}\n", .{ namespace_decl.name, namespace_decl.index.fmtDebug(mod.ip) });
-    }
+    // for (namespace.decls.keys()) |namespace_decl_index| {
+    //     const namespace_decl = mod.declPtr(namespace_decl_index);
+    //     std.debug.print("{s:<18} {}\n", .{ namespace_decl.name, namespace_decl.index.fmtDebug(mod.ip) });
+    // }
 
     var arena = std.heap.ArenaAllocator.init(mod.gpa);
     defer arena.deinit();
@@ -179,9 +180,8 @@ fn parseAnnotatedSourceLoc(annotation: helper.AnnotatedSourceLoc) !TestItem {
 
 fn findClosingBrace(source: []const u8) ?usize {
     var depth: usize = 0;
-    var i: usize = 0;
-    while (i < source.len) : (i += 1) {
-        switch (source[i]) {
+    for (source, 0..) |c, i| {
+        switch (c) {
             '(' => depth += 1,
             ')' => {
                 if (depth == 0) return i;
