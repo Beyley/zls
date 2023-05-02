@@ -22,12 +22,13 @@ test "semantic analysis" {
 
     var dir = try std.fs.cwd().openIterableDir(sema_dir, .{});
     defer dir.close();
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
 
-    var dir_it = dir.iterateAssumeFirstIteration();
-    while (try dir_it.next()) |entry| {
+    while (try walker.next()) |entry| {
         if (entry.kind != .File) continue;
 
-        const file = try dir.dir.openFile(entry.name, .{});
+        const file = try entry.dir.openFile(entry.basename, .{});
         defer file.close();
         var file_content = try file.readToEndAlloc(allocator, std.math.maxInt(u32));
         defer allocator.free(file_content);
@@ -55,9 +56,10 @@ fn testSemanticAnalysis(source: []const u8) !void {
     };
 
     // add the given source file to the document store
-    const handle = try document_store.openDocument(test_uri, try allocator.dupeZ(u8, source));
+    _ = try document_store.openDocument(test_uri, try allocator.dupeZ(u8, source));
+    const handle = document_store.handles.get(test_uri).?;
     std.debug.assert(handle.zir_status == .done);
-    std.debug.assert(handle.tree.errors == 0);
+    std.debug.assert(handle.tree.errors.len == 0);
     std.debug.assert(!handle.zir.hasCompileErrors());
 
     // create a Module that stores data which is used across multiple files
@@ -115,6 +117,22 @@ fn testSemanticAnalysis(source: []const u8) !void {
         const identifier = offsets.locToSlice(source, identifier_loc);
         const test_item = try parseAnnotatedSourceLoc(annotation);
 
+        if (test_item.expected_error) |expected_error| {
+            const actual_error: zls.DocumentStore.ErrorMessage = for (handle.analysis_errors.items) |actual_error| {
+                if (std.meta.eql(actual_error.loc, annotation.loc)) break actual_error;
+            } else return error.ErrorNotFound; // definetly not a confusing error name
+
+            if (!std.mem.eql(u8, expected_error, actual_error.message)) {
+                try error_builder.msgAtLoc("expected error message '{s}' but got '{s}'", test_uri, annotation.loc, .err, .{
+                    expected_error,
+                    actual_error.message,
+                });
+                return error.WrongError;
+            }
+
+            continue;
+        }
+
         var adapter = Module.DeclAdapter{ .mod = &mod };
         const found_decl_index: InternPool.DeclIndex = namespace.decls.getKeyAdapted(identifier, adapter) orelse {
             try error_builder.msgAtLoc("couldn't find identifier `{s}` here", test_uri, identifier_loc, .err, .{identifier});
@@ -153,12 +171,20 @@ fn testSemanticAnalysis(source: []const u8) !void {
 
 const TestItem = struct {
     loc: offsets.Loc,
-    expected_type: ?[]const u8,
-    expected_value: ?[]const u8,
+    expected_type: ?[]const u8 = null,
+    expected_value: ?[]const u8 = null,
+    expected_error: ?[]const u8 = null,
 };
 
-fn parseAnnotatedSourceLoc(annotation: helper.AnnotatedSourceLoc) !TestItem {
+fn parseAnnotatedSourceLoc(annotation: helper.AnnotatedSourceLoc) error{InvalidTestItem}!TestItem {
     const str = annotation.content;
+
+    if (std.mem.startsWith(u8, str, "error:")) {
+        return .{
+            .loc = annotation.loc,
+            .expected_error = std.mem.trim(u8, str["error:".len..], &std.ascii.whitespace),
+        };
+    }
 
     if (!std.mem.startsWith(u8, str, "(")) return error.InvalidTestItem;
     const expected_type_start = 1;
@@ -168,8 +194,16 @@ fn parseAnnotatedSourceLoc(annotation: helper.AnnotatedSourceLoc) !TestItem {
     const expected_value_start = expected_type_end + 2;
     const expected_value_end = expected_value_start + (findClosingBrace(str[expected_value_start..]) orelse return error.InvalidTestItem);
 
-    const expected_type = offsets.locToSlice(str, .{ .start = expected_type_start, .end = expected_type_end });
-    const expected_value = offsets.locToSlice(str, .{ .start = expected_value_start, .end = expected_value_end });
+    const expected_type = std.mem.trim(
+        u8,
+        offsets.locToSlice(str, .{ .start = expected_type_start, .end = expected_type_end }),
+        &std.ascii.whitespace,
+    );
+    const expected_value = std.mem.trim(
+        u8,
+        offsets.locToSlice(str, .{ .start = expected_value_start, .end = expected_value_end }),
+        &std.ascii.whitespace,
+    );
 
     return .{
         .loc = annotation.loc,

@@ -2037,10 +2037,7 @@ pub fn coerce(
         else => {},
     }
 
-    // TODO: compile error
-    std.debug.panic("error: '{}' cannot be coerced to type '{}'", .{ inst.fmt(ip.*), dest_key.fmt(ip.*) });
-
-    // return result_value;
+    return .none;
 }
 
 pub fn cast(ip: *InternPool, gpa: Allocator, destination_ty: Index, source_ty: Index, target: std.Target) Allocator.Error!Index {
