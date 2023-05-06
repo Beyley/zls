@@ -1,8 +1,7 @@
 const optional_type = ?u32;
 //    ^^^^^^^^^^^^^ (type)(?u32)
-// TODO
-// const null_optional: ?u32 = null;
-// //    ^^^^^^^^^^^^^ (?u32)(null)
+const null_optional: ?u32 = null;
+//    ^^^^^^^^^^^^^ (?u32)(null)
 const non_null_optional: ?u32 = 3;
 //    ^^^^^^^^^^^^^^^^^ (?u32)(3)
 

@@ -1885,7 +1885,7 @@ pub fn coerce(
         .Optional => optional: {
             // null to ?T
             if (inst_ty == .null_type) {
-                return .null_value;
+                return try ip.get(gpa, .{ .null_value = .{ .ty = dest_ty } });
             }
 
             // TODO cast from ?*T and ?[*]T to ?*anyopaque
