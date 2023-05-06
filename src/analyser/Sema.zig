@@ -183,7 +183,7 @@ fn analyzeBodyInner(
             .bit_or                       => .none,
             .bitcast                      => .none,
             .suspend_block                => .none,
-            .bool_not                     => .none,
+            .bool_not                     => try sema.zirBoolNot(block,inst),
             .bool_br_and                  => .none,
             .bool_br_or                   => .none,
             .c_import                     => .none,
@@ -888,6 +888,24 @@ fn zirAsNode(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!I
     const operand = sema.resolveIndex(extra.operand);
 
     return try sema.coerce(block, dest_ty, operand);
+}
+
+fn zirBoolNot(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].un_node;
+    // const src = inst_data.src();
+    // const operand_src: LazySrcLoc = .{ .node_offset_un_op = inst_data.src_node };
+    const uncasted_operand = sema.resolveIndex(inst_data.operand);
+
+    const operand = try sema.coerce(block, .bool_type, uncasted_operand);
+
+    return switch (operand) {
+        Index.bool_false => Index.bool_true,
+        Index.bool_true => Index.bool_false,
+        else => sema.get(.{ .unknown_value = .{ .ty = Index.bool_type } }),
+    };
 }
 
 /// Only called for equality operators. See also `zirCmp`.

@@ -27,3 +27,8 @@ const TrueToInt = @boolToInt(true);
 //    ^^^^^^^^^ (comptime_int)(1)
 const FalseToInt = @boolToInt(false);
 //    ^^^^^^^^^^ (comptime_int)(0)
+
+const NotTrue = !true;
+//    ^^^^^^^ (bool)(false)
+const NotFalse = !false;
+//    ^^^^^^^^ (bool)(true)
