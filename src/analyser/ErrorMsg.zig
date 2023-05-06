@@ -22,6 +22,14 @@ pub const Data = union(enum) {
     compare_eq_with_null: struct {
         non_null_type: Index,
     },
+    /// zig: tried to unwrap optional of type `{}` which was '{}'
+    invalid_optional_unwrap: struct {
+        operand: Index,
+    },
+    /// zig: expected optional type, found '{}'
+    expected_optional_type: struct {
+        actual: Index,
+    },
 };
 
 loc: offsets.Loc,
@@ -47,6 +55,20 @@ pub fn message(
             allocator,
             "comparison of '{}' with null",
             .{info.non_null_type.fmt(ip)},
+        ),
+        .invalid_optional_unwrap => |info| blk: {
+            const operand_ty = ip.indexToKey(info.operand).typeOf();
+            const payload_ty = ip.indexToKey(operand_ty).optional_type.payload_type;
+            break :blk std.fmt.allocPrint(
+                allocator,
+                "tried to unwrap optional of type `{}` which was {}",
+                .{ payload_ty.fmt(ip), info.operand.fmt(ip) },
+            );
+        },
+        .expected_optional_type => |info| std.fmt.allocPrint(
+            allocator,
+            "expected optional type, found '{}'",
+            .{info.actual.fmt(ip)},
         ),
     };
 }

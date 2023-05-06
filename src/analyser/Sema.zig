@@ -240,9 +240,9 @@ fn analyzeBodyInner(
             .merge_error_sets             => .none,
             .negate                       => .none,
             .negate_wrap                  => .none,
-            .optional_payload_safe        => .none,
+            .optional_payload_safe        => try sema.zirOptionalPayload(block,inst),
             .optional_payload_safe_ptr    => .none,
-            .optional_payload_unsafe      => .none,
+            .optional_payload_unsafe      => try sema.zirOptionalPayload(block,inst),
             .optional_payload_unsafe_ptr  => .none,
             .optional_type                => try sema.zirOptionalType(block, inst),
             .ref                          => .none,
@@ -1112,17 +1112,18 @@ fn zirFieldVal(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error
     defer tracy.end();
 
     const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
-    // const src = inst_data.src();
+    const src = inst_data.src();
     // const field_name_src: LazySrcLoc = .{ .node_offset_field_name = inst_data.src_node };
     const extra = sema.code.extraData(Zir.Inst.Field, inst_data.payload_index).data;
     const field_name = sema.code.nullTerminatedString(extra.field_name_start);
     const object = sema.resolveIndex(extra.lhs);
-    return sema.fieldVal(block, object, field_name);
+    return sema.fieldVal(block, src, object, field_name);
 }
 
 fn fieldVal(
     sema: *Sema,
     block: *Block,
+    src: LazySrcLoc,
     object: Index,
     field_name: []const u8,
 ) Allocator.Error!Index {
@@ -1199,15 +1200,13 @@ fn fieldVal(
         .optional_type => |optional_info| blk: {
             if (!std.mem.eql(u8, field_name, "?")) break :blk false;
 
-            if (object == .type_type) {
-                std.debug.panic("tried to unwrap optional of type `{}` which was null", .{
-                    optional_info.payload_type.fmt(sema.mod.ip),
-                });
+            if (val.isNull()) {
+                try sema.fail(block, src, .{ .invalid_optional_unwrap = .{ .operand = object } });
             }
+
             return switch (val) {
                 .optional_value => |optional_val| optional_val.val,
-                .unknown_value => object,
-                else => unreachable, // TODO return error.InvalidOperation
+                else => try sema.getUnknownValue(optional_info.payload_type),
             };
         },
         .struct_type => |struct_index| blk: {
@@ -1380,6 +1379,34 @@ fn zirIntType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
         .signedness = int_type.signedness,
         .bits = int_type.bit_count,
     } });
+}
+
+fn zirOptionalPayload(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].un_node;
+    const src = inst_data.src();
+    const operand = sema.resolveIndex(inst_data.operand);
+    const operand_key = sema.indexToKey(operand);
+    const operand_ty = operand_key.typeOf();
+    const operand_ty_key = sema.indexToKey(operand_ty);
+
+    const result_ty = switch (operand_ty_key) {
+        .optional_type => |optional_info| optional_info.payload_type,
+        else => {
+            try sema.fail(block, src, .{ .expected_optional_type = .{ .actual = operand_ty } });
+            return try sema.getUnknownValue(.unknown_type);
+        },
+    };
+
+    if (operand_key == .optional_value) {
+        return operand_key.optional_value.val;
+    } else if (operand_key.isNull() or operand_key == .undefined_value) {
+        try sema.fail(block, src, .{ .invalid_optional_unwrap = .{ .operand = operand } });
+    } else unreachable;
+
+    return try sema.getUnknownValue(result_ty);
 }
 
 fn zirOptionalType(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {

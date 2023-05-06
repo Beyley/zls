@@ -778,6 +778,18 @@ pub const Key = union(enum) {
         return switch (val) {
             .simple_value => |simple| switch (simple) {
                 .null_value => true,
+                else => false,
+            },
+            .null_value => true,
+            .optional_value => false,
+            else => false,
+        };
+    }
+
+    pub fn isZero(val: Key) bool {
+        return switch (val) {
+            .simple_value => |simple| switch (simple) {
+                .null_value => true,
                 .bool_true => false,
                 .bool_false => true,
                 .the_only_possible_value => true,
