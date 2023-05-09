@@ -40,6 +40,7 @@ fn testSemanticAnalysis(source: []const u8) !void {
     var document_store = zls.DocumentStore{
         .allocator = allocator,
         .config = &zls.Config{
+            .analysis_backend = .astgen_analyser,
             .enable_ast_check_diagnostics = true,
             .prefer_ast_check_as_child_process = false,
         },
