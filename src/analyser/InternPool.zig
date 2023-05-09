@@ -57,6 +57,8 @@ pub const StructIndex = enum(u32) { _ };
 
 pub const Struct = struct {
     fields: std.StringArrayHashMapUnmanaged(Field),
+    owner_decl: u32 = 0,
+    zir_index: u32 = 0,
     namespace: NamespaceIndex,
     layout: std.builtin.Type.ContainerLayout = .Auto,
     backing_int_ty: Index,
@@ -1808,6 +1810,171 @@ fn deepHash(hasher: anytype, key: anytype) void {
 // ---------------------------------------------
 //                    UTILITY
 // ---------------------------------------------
+
+/// @as(dest_ty, inst);
+pub fn coerce(
+    ip: *InternPool,
+    gpa: Allocator,
+    arena: Allocator,
+    dest_ty: Index,
+    inst: Index,
+    target: std.Target,
+) Allocator.Error!Index {
+    const inst_ty = ip.indexToKey(inst).typeOf();
+    if (dest_ty == inst_ty) return inst;
+
+    const result_value = try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
+    if (inst_ty == .undefined_type) return result_value;
+
+    const inst_ty_key = ip.indexToKey(inst_ty);
+    const dest_key = ip.indexToKey(dest_ty);
+    assert(dest_key.typeOf() == .type_type);
+    if (dest_key == .unknown_value) return result_value;
+
+    var in_memory_result = try ip.coerceInMemoryAllowed(gpa, arena, dest_ty, inst_ty, false, builtin.target);
+    if (in_memory_result == .ok) return result_value;
+
+    switch (dest_key.zigTypeTag()) {
+        .Optional => optional: {
+            // null to ?T
+            if (inst_ty == .null_type) {
+                return .null_value;
+            }
+
+            // TODO cast from ?*T and ?[*]T to ?*anyopaque
+            // but don't do it if the source type is a double pointer
+            if (dest_key.optional_type.payload_type == .anyopaque_type) {
+                return result_value; // TODO
+            }
+
+            // T to ?T
+            const child_type = dest_key.optional_type.payload_type;
+            const intermediate = try ip.coerce(gpa, arena, child_type, inst, target);
+            if (intermediate == .none) break :optional;
+
+            return try ip.get(gpa, .{ .optional_value = .{
+                .ty = dest_ty,
+                .val = intermediate,
+            } });
+        },
+        .Pointer => pointer: {
+            const dest_info = dest_key.pointer_type;
+
+            // Function body to function pointer.
+            if (inst_ty_key.zigTypeTag() == .Fn) {
+                @panic("TODO");
+            }
+
+            // *T to *[1]T
+            single_item: {
+                if (dest_info.size != .One) break :single_item;
+                if (!inst_ty_key.isSinglePointer()) break :single_item; // TODO
+                // TODO if (!sema.checkPtrAttributes(dest_ty, inst_ty, &in_memory_result)) break :pointer;
+                const ptr_elem_ty = inst_ty_key.pointer_type.elem_type;
+
+                const array_ty = ip.indexToKey(dest_info.elem_type);
+                if (array_ty != .array_type) break :single_item;
+                const array_elem_ty = array_ty.array_type.child;
+                if (try ip.coerceInMemoryAllowed(gpa, arena, array_elem_ty, ptr_elem_ty, dest_info.is_const, target) != .ok) {
+                    break :single_item;
+                }
+                return result_value;
+                // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
+            }
+
+            // Coercions where the source is a single pointer to an array.
+            src_array_ptr: {
+                if (!inst_ty_key.isSinglePointer()) break :src_array_ptr; // TODO
+                // TODO if (!sema.checkPtrAttributes(dest_ty, inst_ty, &in_memory_result)) break :pointer;
+
+                const array_ty = ip.indexToKey(inst_ty_key.pointer_type.elem_type);
+                if (array_ty != .array_type) break :src_array_ptr;
+                const array_elem_type = array_ty.array_type.child;
+
+                const elem_res = try ip.coerceInMemoryAllowed(gpa, arena, dest_info.elem_type, array_elem_type, dest_info.is_const, target);
+                if (elem_res != .ok) {
+                    in_memory_result = .{ .ptr_child = .{
+                        .child = try elem_res.dupe(arena),
+                        .actual = array_elem_type,
+                        .wanted = dest_info.elem_type,
+                    } };
+                    break :src_array_ptr;
+                }
+
+                if (dest_info.sentinel != .none and
+                    dest_info.sentinel != array_ty.array_type.sentinel)
+                {
+                    in_memory_result = .{ .ptr_sentinel = .{
+                        .actual = array_ty.array_type.sentinel,
+                        .wanted = dest_info.sentinel,
+                        .ty = dest_info.elem_type,
+                    } };
+                    break :src_array_ptr;
+                }
+
+                return result_value;
+                // switch (dest_info.size) {
+                //     // *[N]T to []T
+                //     .Slice => return ip.coerceArrayPtrToSlice(gpa, arena, dest_ty, inst),
+                //     // *[N]T to [*c]T
+                //     .C => return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst),
+                //     // *[N]T to [*]T
+                //     .Many => return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst),
+                //     .One => {},
+                // }
+            }
+
+            // coercion from C pointer
+            const is_c_ptr = inst_ty_key == .pointer_type and inst_ty_key.pointer_type.size == .C;
+            if (is_c_ptr) src_c_ptr: {
+                // TODO if (!sema.checkPtrAttributes(dest_ty, inst_ty, &in_memory_result)) break :src_c_ptr;
+                const src_elem_ty = inst_ty_key.pointer_type.elem_type;
+                if (try ip.coerceInMemoryAllowed(gpa, arena, dest_info.elem_type, src_elem_ty, dest_info.is_const, target) != .ok) {
+                    break :src_c_ptr;
+                }
+                return result_value;
+                // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
+            }
+
+            // cast from *T and [*]T to *anyopaque
+            // but don't do it if the source type is a double pointer
+            if (dest_info.elem_type == .anyopaque_type and inst_ty_key == .pointer_type) {
+                // TODO if (!sema.checkPtrAttributes(dest_ty, inst_ty, &in_memory_result)) break :pointer;
+                const elem_ty = ip.indexToKey(inst_ty_key.pointer_type.elem_type);
+                if (elem_ty == .pointer_type or elem_ty.isPtrLikeOptional(ip)) {
+                    in_memory_result = .{ .double_ptr_to_anyopaque = .{
+                        .actual = inst_ty,
+                        .wanted = dest_ty,
+                    } };
+                    break :pointer;
+                }
+                return result_value;
+                // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
+            }
+
+            return result_value;
+        },
+        .Int, .ComptimeInt => switch (inst_ty_key.zigTypeTag()) {
+            .Float, .ComptimeFloat => @panic("TODO"),
+            .Int, .ComptimeInt => {
+                // TODO  actually do the coersion
+                return inst;
+            },
+            else => {},
+        },
+        .Float, .ComptimeFloat => @panic("TODO"),
+        .Enum => @panic("TODO"),
+        .ErrorUnion => @panic("TODO"),
+        .Union => @panic("TODO"),
+        .Array => @panic("TODO"),
+        .Vector => @panic("TODO"),
+        .Struct => @panic("TODO"),
+        else => {},
+    }
+
+    // TODO: compile error
+    return result_value;
+}
 
 pub fn cast(ip: *InternPool, gpa: Allocator, destination_ty: Index, source_ty: Index, target: std.Target) Allocator.Error!Index {
     return resolvePeerTypes(ip, gpa, &.{ destination_ty, source_ty }, target);

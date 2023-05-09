@@ -229,14 +229,14 @@ pub const SrcLoc = struct {
                 return nodeToSpan(tree, src_node);
             },
             .for_input => |for_input| {
-                const tree = try src_loc.handle.tree;
+                const tree = src_loc.handle.tree;
                 const node = src_loc.declRelativeToNodeIndex(for_input.for_node_offset);
                 const for_full = tree.fullFor(node).?;
                 const src_node = for_full.ast.inputs[for_input.input_index];
                 return nodeToSpan(tree, src_node);
             },
             .for_capture_from_input => |node_off| {
-                const tree = try src_loc.handle.tree;
+                const tree =  src_loc.handle.tree;
                 const token_tags = tree.tokens.items(.tag);
                 const input_node = src_loc.declRelativeToNodeIndex(node_off);
                 // We have to actually linear scan the whole AST to find the for loop

@@ -15,6 +15,7 @@ const translate_c = @import("translate_c.zig");
 const ComptimeInterpreter = @import("ComptimeInterpreter.zig");
 const AstGen = @import("stage2/AstGen.zig");
 const Zir = @import("stage2/Zir.zig");
+const Module = @import("analyser/Module.zig");
 const InternPool = @import("analyser/InternPool.zig");
 
 const DocumentStore = @This();
@@ -66,6 +67,7 @@ pub const Handle = struct {
         outdated,
         done,
     } = .none,
+    root_decl: Module.Decl.OptionalIndex = .none,
     /// Not null if a ComptimeInterpreter is actually used
     interpreter: ?*ComptimeInterpreter = null,
     document_scope: analysis.DocumentScope,
