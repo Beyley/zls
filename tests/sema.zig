@@ -81,6 +81,7 @@ fn testSemanticAnalysis(source: []const u8) !void {
     const struct_index: InternPool.StructIndex = mod.ip.indexToKey(decl.index).struct_type;
     const struct_obj: *InternPool.Struct = mod.ip.getStruct(struct_index);
     const namespace: *Module.Namespace = mod.namespacePtr(struct_obj.namespace);
+    _ = namespace;
 
     // this will print all top-level declarations and their value
     // for (namespace.decls.keys()) |namespace_decl_index| {
@@ -133,8 +134,7 @@ fn testSemanticAnalysis(source: []const u8) !void {
             continue;
         }
 
-        var adapter = Module.DeclAdapter{ .mod = &mod };
-        const found_decl_index: InternPool.DeclIndex = namespace.decls.getKeyAdapted(identifier, adapter) orelse {
+        const found_decl_index = lookupDeclIdentifier(&mod, identifier).unwrap() orelse {
             try error_builder.msgAtLoc("couldn't find identifier `{s}` here", test_uri, identifier_loc, .err, .{identifier});
             return error.IdentifierNotFound;
         };
@@ -167,6 +167,17 @@ fn testSemanticAnalysis(source: []const u8) !void {
             }
         }
     }
+}
+
+/// this is now how you are supposed to lookup identifiers but its good enough for now
+fn lookupDeclIdentifier(mod: *Module, identifier: []const u8) InternPool.OptionalDeclIndex {
+    var decl_it = mod.ip.decls.constIterator(0);
+    var index: u32 = 0;
+    while (decl_it.next()) |decl| : (index += 1) {
+        if (!std.mem.eql(u8, decl.name, identifier)) continue;
+        return @intToEnum(InternPool.OptionalDeclIndex, index);
+    }
+    return .none;
 }
 
 const TestItem = struct {

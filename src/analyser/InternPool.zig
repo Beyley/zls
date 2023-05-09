@@ -206,7 +206,7 @@ pub const OptionalDeclIndex = enum(u32) {
     _,
 
     pub fn init(oi: ?DeclIndex) OptionalDeclIndex {
-        return oi orelse .none;
+        return if (oi) |index| index.toOptional() else .none;
     }
 
     pub fn unwrap(oi: OptionalDeclIndex) ?DeclIndex {

@@ -8,3 +8,12 @@ const other_struct: OtherStruct = undefined;
 //    ^^^^^^^^^^^^ (OtherStruct)()
 const alpha = other_struct.alpha;
 //    ^^^^^ (u32)()
+
+const OuterStruct = struct {
+    const InnerStruct = struct {
+        const T = u32;
+        //    ^ (type)(u32)
+    };
+    const V = ?u0;
+    //    ^ (type)(?u0)
+};
