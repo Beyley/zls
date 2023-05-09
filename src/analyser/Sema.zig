@@ -217,7 +217,7 @@ fn analyzeBodyInner(
             .field_ptr                    => .none,
             .field_ptr_init               => .none,
             .field_ptr_named              => .none,
-            .field_val                    => .none,
+            .field_val                    => try sema.zirFieldVal(block, inst),
             .field_val_named              => .none,
             .field_call_bind              => .none,
             .func                         => .none,
@@ -982,6 +982,176 @@ fn lookupInNamespace(
     }
 
     return null;
+}
+
+fn zirFieldVal(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const inst_data = sema.code.instructions.items(.data)[inst].pl_node;
+    // const src = inst_data.src();
+    // const field_name_src: LazySrcLoc = .{ .node_offset_field_name = inst_data.src_node };
+    const extra = sema.code.extraData(Zir.Inst.Field, inst_data.payload_index).data;
+    const field_name = sema.code.nullTerminatedString(extra.field_name_start);
+    const object = sema.resolveIndex(extra.lhs);
+    return sema.fieldVal(block, object, field_name);
+}
+
+fn fieldVal(
+    sema: *Sema,
+    block: *Block,
+    object: Index,
+    field_name: []const u8,
+) Allocator.Error!Index {
+    const val = sema.indexToKey(object);
+    std.debug.assert(val.typeOf() != .none);
+    const ty = sema.indexToKey(val.typeOf());
+
+    const inner_ty = switch (ty) {
+        .pointer_type => |info| if (info.size == .One) sema.indexToKey(info.elem_type) else ty,
+        else => ty,
+    };
+
+    const can_have_fields: bool = switch (inner_ty) {
+        .simple_type => |simple| switch (simple) {
+            .type => blk: {
+                const namespace_index = val.getNamespace(sema.mod.ip);
+
+                if (try sema.lookupInNamespace(block, sema.mod.namespacePtr(namespace_index), field_name)) |decl_index| {
+                    const decl = sema.mod.declPtr(decl_index);
+                    return decl.index;
+                }
+
+                if (val == .unknown_value) {
+                    return .unknown_unknown;
+                }
+
+                switch (val) {
+                    .error_set_type => |error_set_info| { // TODO
+                        _ = error_set_info;
+                    },
+                    .union_type => {}, // TODO
+                    .enum_type => |enum_index| { // TODO
+                        const enum_info = sema.mod.ip.getEnum(enum_index);
+                        if (enum_info.fields.get(field_name)) |field| {
+                            _ = field;
+                            return .unknown_unknown; // TODO
+                        }
+                    },
+                    else => break :blk false,
+                }
+                break :blk true;
+            },
+            else => false,
+        },
+        .pointer_type => |pointer_info| blk: {
+            if (pointer_info.size == .Slice) {
+                if (std.mem.eql(u8, field_name, "ptr")) {
+                    var many_ptr_info = InternPool.Key{ .pointer_type = pointer_info };
+                    many_ptr_info.pointer_type.size = .Many;
+                    // TODO resolve ptr of Slice
+                    return try sema.get(.{ .unknown_value = .{ .ty = try sema.get(many_ptr_info) } });
+                } else if (std.mem.eql(u8, field_name, "len")) {
+                    // TODO resolve length of Slice
+                    return try sema.get(.{ .unknown_value = .{ .ty = .usize_type } });
+                }
+            } else if (sema.indexToKey(pointer_info.elem_type) == .array_type) {
+                if (std.mem.eql(u8, field_name, "len")) {
+                    // TODO resolve length of Slice
+                    return try sema.get(.{ .unknown_value = .{ .ty = .usize_type } });
+                }
+            }
+            break :blk true;
+        },
+        .array_type => |array_info| blk: {
+            if (std.mem.eql(u8, field_name, "len")) {
+                return try sema.get(.{ .int_u64_value = .{
+                    .ty = .usize_type,
+                    .int = array_info.len,
+                } });
+            }
+            break :blk true;
+        },
+        .optional_type => |optional_info| blk: {
+            if (!std.mem.eql(u8, field_name, "?")) break :blk false;
+
+            if (object == .type_type) {
+                std.debug.panic("tried to unwrap optional of type `{}` which was null", .{
+                    optional_info.payload_type.fmt(sema.mod.ip),
+                });
+            }
+            return switch (val) {
+                .optional_value => |optional_val| optional_val.val,
+                .unknown_value => object,
+                else => unreachable, // TODO return error.InvalidOperation
+            };
+        },
+        .struct_type => |struct_index| blk: {
+            const struct_info = sema.mod.ip.getStruct(struct_index);
+            try sema.semaStructFields(struct_info);
+            if (struct_info.fields.getIndex(field_name)) |field_index| {
+                const field = struct_info.fields.values()[field_index];
+
+                return switch (val) {
+                    .aggregate => |aggregate| aggregate.values[field_index],
+                    .unknown_value => try sema.get(.{ .unknown_value = .{ .ty = field.ty } }),
+                    else => unreachable, // TODO return error.InvalidOperation
+                };
+            }
+            break :blk true;
+        },
+        .enum_type => |enum_info| blk: { // TODO
+            _ = enum_info;
+            break :blk true;
+        },
+        .union_type => |union_info| blk: { // TODO
+            _ = union_info;
+            break :blk true;
+        },
+        .int_type,
+        .error_union_type,
+        .error_set_type,
+        .function_type,
+        .tuple_type,
+        .vector_type,
+        .anyframe_type,
+        => false,
+
+        .simple_value,
+        .int_u64_value,
+        .int_i64_value,
+        .int_big_value,
+        .float_16_value,
+        .float_32_value,
+        .float_64_value,
+        .float_80_value,
+        .float_128_value,
+        .float_comptime_value,
+        => unreachable,
+
+        .bytes,
+        .optional_value,
+        .slice,
+        .aggregate,
+        .union_value,
+        .null_value,
+        .undefined_value,
+        .unknown_value,
+        => unreachable,
+    };
+
+    const accessed_ty = if (inner_ty == .simple_type and inner_ty.simple_type == .type) val else inner_ty;
+    if (can_have_fields) {
+        std.debug.panic(
+            "`{}` has no member '{s}'",
+            .{ accessed_ty.fmt(sema.mod.ip), field_name },
+        );
+    } else {
+        std.debug.panic(
+            "`{}` does not support field access",
+            .{accessed_ty.fmt(sema.mod.ip)},
+        );
+    }
 }
 
 fn zirInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!Index {
