@@ -199,6 +199,8 @@ pub fn interpret(
 
             const struct_index = try interpreter.ip.createStruct(interpreter.allocator, .{
                 .fields = .{},
+                .owner_decl = .none, // TODO
+                .zir_index = 0,
                 .namespace = container_namespace,
                 .layout = .Auto, // TODO
                 .backing_int_ty = .none, // TODO
@@ -270,6 +272,7 @@ pub fn interpret(
                 .index = .none,
                 .alignment = 0, // TODO
                 .address_space = .generic, // TODO
+                .src_namespace = namespace,
                 .is_pub = true, // TODO
                 .is_exported = false, // TODO
             });
@@ -869,6 +872,8 @@ pub fn interpret(
                 if (std.mem.eql(u8, import_str[1 .. import_str.len - 1], "root")) {
                     const struct_index = try interpreter.ip.createStruct(interpreter.allocator, .{
                         .fields = .{},
+                        .owner_decl = .none, // TODO
+                        .zir_index = 0,
                         .namespace = .none,
                         .layout = .Auto,
                         .backing_int_ty = .none,
@@ -1066,6 +1071,7 @@ pub fn interpret(
                     .index = function_type,
                     .alignment = 0, // TODO
                     .address_space = .generic, // TODO
+                    .src_namespace = namespace,
                     .is_pub = false, // TODO
                     .is_exported = false, // TODO
                 });
@@ -1264,6 +1270,7 @@ pub fn call(
                 .index = arguments[arg_index].index,
                 .alignment = 0, // TODO
                 .address_space = .generic, // TODO
+                .src_namespace = namespace,
                 .is_pub = true, // TODO
                 .is_exported = false, // TODO
             });

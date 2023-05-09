@@ -61,7 +61,7 @@ fn testSemanticAnalysis(source: []const u8) !void {
 
     // create a Module that stores data which is used across multiple files
     // like type, values and declarations
-    var mod = try Module.init(allocator);
+    var mod = try Module.init(allocator, &document_store);
     defer mod.deinit();
 
     // add the given file to the module
@@ -69,8 +69,8 @@ fn testSemanticAnalysis(source: []const u8) !void {
     try mod.semaFile(handle);
     std.debug.assert(handle.root_decl != .none);
 
-    const decl_index: Module.Decl.Index = handle.root_decl.unwrap().?;
-    const decl: *Module.Decl = mod.declPtr(decl_index);
+    const decl_index: InternPool.DeclIndex = handle.root_decl.unwrap().?;
+    const decl: *InternPool.Decl = mod.declPtr(decl_index);
     defer mod.destroyDecl(decl_index);
 
     const struct_index: InternPool.StructIndex = mod.ip.indexToKey(decl.index).struct_type;
@@ -114,11 +114,11 @@ fn testSemanticAnalysis(source: []const u8) !void {
         const test_item = try parseAnnotatedSourceLoc(annotation);
 
         var adapter = Module.DeclAdapter{ .mod = &mod };
-        const found_decl_index: Module.Decl.Index = namespace.decls.getKeyAdapted(identifier, adapter) orelse {
+        const found_decl_index: InternPool.DeclIndex = namespace.decls.getKeyAdapted(identifier, adapter) orelse {
             try error_builder.msgAtLoc("couldn't find identifier `{s}` here", test_uri, identifier_loc, .err, .{identifier});
             return error.IdentifierNotFound;
         };
-        const found_decl: *Module.Decl = mod.declPtr(found_decl_index);
+        const found_decl: *InternPool.Decl = mod.declPtr(found_decl_index);
 
         if (test_item.expected_type) |expected_type| {
             const val: InternPool.Key = mod.ip.indexToKey(found_decl.index);

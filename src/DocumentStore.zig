@@ -67,7 +67,7 @@ pub const Handle = struct {
         outdated,
         done,
     } = .none,
-    root_decl: Module.Decl.OptionalIndex = .none,
+    root_decl: InternPool.OptionalDeclIndex = .none,
     /// Not null if a ComptimeInterpreter is actually used
     interpreter: ?*ComptimeInterpreter = null,
     document_scope: analysis.DocumentScope,

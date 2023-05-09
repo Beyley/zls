@@ -9,11 +9,15 @@ const Zir = @import("../stage2/Zir.zig");
 const Module = @import("Module.zig");
 const trace = @import("../tracy.zig").trace;
 const Namespace = Module.Namespace;
-const Decl = Module.Decl;
+
+const LazySrcLoc = @import("../stage2/Module.zig").LazySrcLoc;
 
 // const offsets = @import("../offsets.zig");
 const InternPool = @import("InternPool.zig");
 const Index = InternPool.Index;
+const Decl = InternPool.Decl;
+const DeclIndex = InternPool.DeclIndex;
+const OptionalDeclIndex = InternPool.OptionalDeclIndex;
 
 mod: *Module,
 gpa: Allocator,
@@ -113,10 +117,10 @@ pub const IndexMap = struct {
 
 pub const Block = struct {
     parent: ?*Block,
-    namespace: *Module.Namespace,
+    namespace: InternPool.NamespaceIndex,
     params: std.ArrayListUnmanaged(Param) = .{},
     label: ?*Label = null,
-    src_decl: Decl.Index,
+    src_decl: DeclIndex,
     is_comptime: bool,
 
     const Param = struct {
@@ -130,8 +134,8 @@ pub const Block = struct {
         results: std.ArrayListUnmanaged(Index),
     };
 
-    pub fn getFileScope(block: *Block) *Module.File {
-        return block.namespace.file_scope;
+    pub fn getHandle(block: *Block, mod: *Module) *Module.Handle {
+        return Module.getHandle(mod.declPtr(block.src_decl).*, mod);
     }
 };
 
@@ -378,12 +382,12 @@ fn analyzeBodyInner(
             .trap           => break always_noreturn,
             // zig fmt: on
 
-            .extended => ext: {
+            .extended => blk: {
                 const extended = datas[inst].extended;
-                break :ext switch (extended.opcode) {
+                break :blk switch (extended.opcode) {
                     // zig fmt: off
                     .variable              => .none,
-                    .struct_decl           => .none,
+                    .struct_decl           => try sema.zirStructDecl(        block, extended, inst),
                     .enum_decl             => .none,
                     .union_decl            => .none,
                     .opaque_decl           => .none,
@@ -951,16 +955,17 @@ fn zirDeclVal(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
     return decl.index;
 }
 
-fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !Decl.Index {
-    var namespace = block.namespace;
+fn lookupIdentifier(sema: *Sema, block: *Block, name: []const u8) !DeclIndex {
+    var namespace_index = block.namespace;
 
-    while (true) {
+    while (namespace_index != .none) {
+        const namespace = sema.mod.namespacePtr(namespace_index);
         if (try sema.lookupInNamespace(block, namespace, name)) |decl_index| {
             return decl_index;
         }
-        assert(namespace.parent != .none); // AstGen detects use of undeclared identifier errors.
-        namespace = sema.mod.namespacePtr(namespace.parent);
+        namespace_index = namespace.parent;
     }
+    unreachable; // AstGen detects use of undeclared identifier errors.
 }
 
 fn lookupInNamespace(
@@ -968,7 +973,7 @@ fn lookupInNamespace(
     block: *Block,
     namespace: *Namespace,
     ident_name: []const u8,
-) Allocator.Error!?Decl.Index {
+) Allocator.Error!?DeclIndex {
     const mod = sema.mod;
     _ = block;
 
@@ -1173,6 +1178,131 @@ fn zirBoolToInt(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Erro
     };
 }
 
+fn zirStructDecl(
+    sema: *Sema,
+    block: *Block,
+    extended: Zir.Inst.Extended.InstData,
+    inst: Zir.Inst.Index,
+) Allocator.Error!Index {
+    const small = @bitCast(Zir.Inst.StructDecl.Small, extended.small);
+    // const src: LazySrcLoc = if (small.has_src_node) blk: {
+    //     const node_offset = @bitCast(i32, sema.code.extra[extended.operand]);
+    //     break :blk LazySrcLoc.nodeOffset(node_offset);
+    // } else sema.src;
+
+    const mod = sema.mod;
+    const struct_index = try mod.ip.createStruct(mod.gpa, .{
+        .fields = .{},
+        .owner_decl = undefined, // set below
+        .zir_index = inst,
+        .namespace = undefined, // set below
+        .layout = small.layout,
+        .backing_int_ty = .none,
+        .status = .none,
+    });
+    const struct_ty = try mod.get(.{ .struct_type = struct_index });
+
+    const namespace_index = try mod.createNamespace(.{
+        .parent = block.namespace,
+        .handle = block.getHandle(mod),
+        .ty = struct_ty,
+    });
+
+    const decl_index = try mod.allocateNewDecl(namespace_index, 0);
+    const decl = mod.declPtr(decl_index);
+
+    const struct_obj = mod.ip.getStruct(struct_index);
+    struct_obj.owner_decl = decl_index.toOptional();
+    struct_obj.namespace = namespace_index;
+    // struct_obj.is_tuple = small.is_tuple;
+
+    const ns = mod.namespacePtr(block.namespace);
+    try ns.anon_decls.putNoClobber(mod.gpa, decl_index, {});
+
+    decl.name = try sema.resolveAnonymousDeclTypeName(block, decl_index, small.name_strategy, "struct", inst);
+    decl.index = struct_ty;
+    decl.alignment = 0;
+    decl.analysis = .complete;
+
+    try sema.analyzeStructDecl(decl, inst, struct_obj);
+
+    return struct_ty;
+}
+
+fn resolveAnonymousDeclTypeName(
+    sema: *Sema,
+    block: *Block,
+    new_decl_index: DeclIndex,
+    name_strategy: Zir.Inst.NameStrategy,
+    anon_prefix: []const u8,
+    inst: ?Zir.Inst.Index,
+) Allocator.Error![]u8 {
+    const mod = sema.mod;
+    const src_decl = mod.declPtr(block.src_decl);
+
+    switch (name_strategy) {
+        .anon => {
+            // It would be neat to have "struct:line:column" but this name has
+            // to survive incremental updates, where it may have been shifted down
+            // or up to a different line, but unchanged, and thus not unnecessarily
+            // semantically analyzed.
+            // This name is also used as the key in the parent namespace so it cannot be
+            // renamed.
+            return try std.fmt.allocPrint(sema.gpa, "{s}__{s}_{d}", .{
+                src_decl.name, anon_prefix, @enumToInt(new_decl_index),
+            });
+        },
+        .parent => return try sema.gpa.dupe(u8, std.mem.sliceTo(mod.declPtr(block.src_decl).name, 0)),
+        .func => {
+            return sema.resolveAnonymousDeclTypeName(block, new_decl_index, .anon, anon_prefix, null);
+            // TODO
+            // const fn_info = sema.code.getFnInfo(sema.func.?.zir_body_inst);
+            // const zir_tags = sema.code.instructions.items(.tag);
+
+            // var buf = std.ArrayList(u8).init(sema.gpa);
+            // defer buf.deinit();
+            // try buf.appendSlice(std.mem.sliceTo(mod.declPtr(block.src_decl).name, 0));
+            // try buf.appendSlice("(");
+
+            // var arg_i: usize = 0;
+            // for (fn_info.param_body) |zir_inst| {
+            //     switch (zir_tags[zir_inst]) {
+            //         .param, .param_comptime, .param_anytype, .param_anytype_comptime => {
+            //             const arg = sema.inst_map.get(zir_inst).?;
+            //             if (arg_i != 0) try buf.appendSlice(",");
+
+            //             try buf.writer().print("{}", .{arg.fmt(mod)});
+
+            //             arg_i += 1;
+            //             continue;
+            //         },
+            //         else => continue,
+            //     }
+            // }
+
+            // try buf.appendSlice(")");
+            // return try buf.toOwnedSlice();
+        },
+        .dbg_var => {
+            const ref = Zir.indexToRef(inst.?);
+            const zir_tags = sema.code.instructions.items(.tag);
+            const zir_data = sema.code.instructions.items(.data);
+            var i = inst.?;
+            while (i < zir_tags.len) : (i += 1) switch (zir_tags[i]) {
+                .dbg_var_ptr, .dbg_var_val => {
+                    if (zir_data[i].str_op.operand != ref) continue;
+
+                    return try std.fmt.allocPrint(sema.gpa, "{s}.{s}", .{
+                        src_decl.name, zir_data[i].str_op.getStr(sema.code),
+                    });
+                },
+                else => {},
+            };
+            return sema.resolveAnonymousDeclTypeName(block, new_decl_index, .anon, anon_prefix, null);
+        },
+    }
+}
+
 //
 //
 //
@@ -1191,7 +1321,7 @@ fn coerce(
 //
 //
 
-fn ensureDeclAnalyzed(sema: *Sema, decl_index: Decl.Index) Allocator.Error!void {
+fn ensureDeclAnalyzed(sema: *Sema, decl_index: DeclIndex) Allocator.Error!void {
     const decl = sema.mod.declPtr(decl_index);
     switch (decl.analysis) {
         .unreferenced => {
@@ -1238,11 +1368,11 @@ pub fn analyzeStructDecl(
 }
 
 pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) !void {
-    const decl_index = @intToEnum(Decl.Index, struct_obj.owner_decl);
+    const decl_index = struct_obj.owner_decl.unwrap().?;
     const namespace = sema.mod.namespacePtr(struct_obj.namespace);
     const zir: Zir = namespace.handle.zir;
     const extended = zir.instructions.items(.data)[struct_obj.zir_index].extended;
-    std.debug.assert(extended.opcode == .struct_decl);
+    assert(extended.opcode == .struct_decl);
     const small = @bitCast(Zir.Inst.StructDecl.Small, extended.small);
     var extra_index: usize = extended.operand;
 
@@ -1280,12 +1410,12 @@ pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) !void {
 
     var block_scope: Block = .{
         .parent = null,
-        .namespace = namespace,
+        .namespace = struct_obj.namespace,
         .src_decl = decl_index,
         .is_comptime = true,
     };
 
-    try struct_obj.fields.ensureTotalCapacity(sema.arena, fields_len);
+    try struct_obj.fields.ensureTotalCapacity(sema.gpa, fields_len);
 
     const Field = struct {
         type_body_len: u32 = 0,
@@ -1361,7 +1491,7 @@ pub fn semaStructFields(sema: *Sema, struct_obj: *InternPool.Struct) !void {
             if (zir_field.type_ref != .none) {
                 break :ty resolveType(sema, zir_field.type_ref);
             }
-            std.debug.assert(zir_field.type_body_len != 0);
+            assert(zir_field.type_body_len != 0);
             const body = zir.extra[extra_index..][0..zir_field.type_body_len];
             extra_index += body.len;
             break :ty try resolveBody(sema, &block_scope, body);
@@ -1377,7 +1507,7 @@ pub fn scanNamespace(
     namespace_index: InternPool.NamespaceIndex,
     extra_start: usize,
     decls_len: u32,
-    parent_decl: *Module.Decl,
+    parent_decl: *Decl,
 ) Allocator.Error!usize {
     const zir = namespace.handle.zir;
 
@@ -1444,43 +1574,43 @@ fn scanDecl(sema: *Sema, iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) 
     const decl_doccomment_index = zir.extra[decl_sub_index + 7];
     const decl_zir_index = zir.extra[decl_sub_index + 6];
     const decl_block_inst_data = zir.instructions.items(.data)[decl_zir_index].pl_node;
-    const decl_node = iter.parent_decl.relativeToNodeIndex(decl_block_inst_data.src_node);
+    const decl_node = Module.relativeToNodeIndex(iter.parent_decl.*, decl_block_inst_data.src_node);
 
     // Every Decl needs a name.
     var kind: Decl.Kind = .named;
-    const decl_name: [:0]const u8 = switch (decl_name_index) {
+    const decl_name: []const u8 = switch (decl_name_index) {
         0 => name: {
             if (export_bit) {
                 const i = iter.usingnamespace_index;
                 iter.usingnamespace_index += 1;
                 kind = .@"usingnamespace";
-                break :name try std.fmt.allocPrintZ(gpa, "usingnamespace_{d}", .{i});
+                break :name try std.fmt.allocPrint(gpa, "usingnamespace_{d}", .{i});
             } else {
                 const i = iter.comptime_index;
                 iter.comptime_index += 1;
                 kind = .@"comptime";
-                break :name try std.fmt.allocPrintZ(gpa, "comptime_{d}", .{i});
+                break :name try std.fmt.allocPrint(gpa, "comptime_{d}", .{i});
             }
         },
         1 => name: {
             const i = iter.unnamed_test_index;
             iter.unnamed_test_index += 1;
             kind = .@"test";
-            break :name try std.fmt.allocPrintZ(gpa, "test_{d}", .{i});
+            break :name try std.fmt.allocPrint(gpa, "test_{d}", .{i});
         },
         2 => name: {
             const test_name = zir.nullTerminatedString(decl_doccomment_index);
             kind = .@"test";
-            break :name try std.fmt.allocPrintZ(gpa, "decltest.{s}", .{test_name});
+            break :name try std.fmt.allocPrint(gpa, "decltest.{s}", .{test_name});
         },
         else => name: {
             const raw_name = zir.nullTerminatedString(decl_name_index);
             if (raw_name.len == 0) {
                 const test_name = zir.nullTerminatedString(decl_name_index + 1);
                 kind = .@"test";
-                break :name try std.fmt.allocPrintZ(gpa, "test.{s}", .{test_name});
+                break :name try std.fmt.allocPrint(gpa, "test.{s}", .{test_name});
             } else {
-                break :name try gpa.dupeZ(u8, raw_name);
+                break :name try gpa.dupe(u8, raw_name);
             }
         },
     };
@@ -1490,7 +1620,7 @@ fn scanDecl(sema: *Sema, iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) 
     // We create a Decl for it regardless of analysis status.
     const gop = try namespace.decls.getOrPutContextAdapted(
         gpa,
-        @as([]const u8, std.mem.sliceTo(decl_name, 0)),
+        decl_name,
         Module.DeclAdapter{ .mod = mod },
         Namespace.DeclContext{ .module = mod },
     );
@@ -1504,18 +1634,13 @@ fn scanDecl(sema: *Sema, iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) 
         }
         gop.key_ptr.* = new_decl_index;
 
-        var block_scope: Block = .{
-            .parent = null,
-            // .current_scope = 0, // TODO
-            .namespace = namespace,
-            .src_decl = new_decl_index,
-            .is_comptime = true, // TODO
-        };
+        new_decl.is_pub = is_pub;
+        new_decl.is_exported = is_exported;
+        // new_decl.has_align = has_align;
+        // new_decl.has_linksection_or_addrspace = has_linksection_or_addrspace;
+        new_decl.zir_decl_index = @intCast(u32, decl_sub_index);
 
-        const inst_data = zir.instructions.items(.data)[decl_zir_index].pl_node;
-        const extra = zir.extraData(Zir.Inst.Block, inst_data.payload_index);
-        const body = zir.extra[extra.end..][0..extra.data.body_len];
-        new_decl.index = try sema.resolveBody(&block_scope, body);
+        try sema.ensureDeclAnalyzed(new_decl_index);
     } else {
         gpa.free(decl_name);
     }
@@ -1523,7 +1648,7 @@ fn scanDecl(sema: *Sema, iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) 
     const decl_index = gop.key_ptr.*;
     const decl = mod.declPtr(decl_index);
 
-    decl.src_node = decl_node;
+    decl.node_idx = decl_node;
     // decl.src_line = line;
 
     decl.is_pub = is_pub;

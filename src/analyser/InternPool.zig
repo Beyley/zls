@@ -57,8 +57,8 @@ pub const StructIndex = enum(u32) { _ };
 
 pub const Struct = struct {
     fields: std.StringArrayHashMapUnmanaged(Field),
-    owner_decl: u32 = 0,
-    zir_index: u32 = 0,
+    owner_decl: OptionalDeclIndex,
+    zir_index: u32,
     namespace: NamespaceIndex,
     layout: std.builtin.Type.ContainerLayout = .Auto,
     backing_int_ty: Index,
@@ -192,17 +192,53 @@ pub const UnknownValue = packed struct {
     ty: Index,
 };
 
-pub const DeclIndex = enum(u32) { _ };
+pub const DeclIndex = enum(u32) {
+    _,
+
+    pub fn toOptional(i: DeclIndex) OptionalDeclIndex {
+        return @intToEnum(OptionalDeclIndex, @enumToInt(i));
+    }
+};
+
+pub const OptionalDeclIndex = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    pub fn init(oi: ?DeclIndex) OptionalDeclIndex {
+        return oi orelse .none;
+    }
+
+    pub fn unwrap(oi: OptionalDeclIndex) ?DeclIndex {
+        if (oi == .none) return null;
+        return @intToEnum(DeclIndex, @enumToInt(oi));
+    }
+};
 
 pub const Decl = struct {
     name: []const u8,
     node_idx: u32,
+    zir_decl_index: u32 = 0,
     /// this stores both the type and the value
     index: Index,
     alignment: u16,
     address_space: std.builtin.AddressSpace,
+    src_namespace: InternPool.NamespaceIndex,
+    analysis: enum {
+        unreferenced,
+        in_progress,
+        complete,
+    } = .complete,
     is_pub: bool,
     is_exported: bool,
+    kind: Kind = undefined,
+
+    pub const Kind = enum {
+        @"usingnamespace",
+        @"test",
+        @"comptime",
+        named,
+        anon,
+    };
 };
 
 const BigIntInternal = struct {
@@ -707,7 +743,7 @@ pub const Key = union(enum) {
             .tuple_type => panicOrElse("TODO", Index.none),
             .vector_type => |vector_info| {
                 if (vector_info.len == 0) {
-                    return panicOrElse("TODO return empty array value", Index.none);
+                    return panicOrElse("TODO return empty array value", Index.the_only_possible_value);
                 }
                 return ip.indexToKey(vector_info.child).onePossibleValue(ip);
             },
@@ -901,7 +937,12 @@ pub const Key = union(enum) {
 
                 return array_info.child;
             },
-            .struct_type => return panicOrElse("TODO", null),
+            .struct_type => |struct_index| {
+                const optional_decl_index = ip.getStruct(struct_index).owner_decl;
+                const decl_index = optional_decl_index.unwrap() orelse return panicOrElse("TODO", null);
+                const decl = ip.getDecl(decl_index);
+                try writer.writeAll(decl.name);
+            },
             .optional_type => |optional_info| {
                 try writer.writeByte('?');
                 return optional_info.payload_type;
@@ -3421,6 +3462,8 @@ test "struct value" {
 
     const struct_index = try ip.createStruct(gpa, .{
         .fields = .{},
+        .owner_decl = .none,
+        .zir_index = 0,
         .namespace = .none,
         .layout = .Auto,
         .backing_int_ty = .none,
