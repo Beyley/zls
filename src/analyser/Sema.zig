@@ -949,7 +949,10 @@ fn zirBoolNot(sema: *Sema, block: *Block, inst: Zir.Inst.Index) Allocator.Error!
     return switch (operand) {
         Index.bool_false => Index.bool_true,
         Index.bool_true => Index.bool_false,
-        else => sema.get(.{ .unknown_value = .{ .ty = Index.bool_type } }),
+        else => switch (sema.indexToKey(operand)) {
+            .undefined_value => operand,
+            else => sema.getUnknownValue(.bool_type),
+        },
     };
 }
 
@@ -1215,6 +1218,7 @@ fn fieldVal(
 
                 return switch (val) {
                     .aggregate => |aggregate| aggregate.values[field_index],
+                    .undefined_value => try sema.get(.{ .undefined_value = .{ .ty = field.ty } }),
                     .unknown_value => try sema.get(.{ .unknown_value = .{ .ty = field.ty } }),
                     else => unreachable, // TODO return error.InvalidOperation
                 };

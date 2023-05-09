@@ -32,3 +32,6 @@ const NotTrue = !true;
 //    ^^^^^^^ (bool)(false)
 const NotFalse = !false;
 //    ^^^^^^^^ (bool)(true)
+
+const NotUndefined = !@as(bool, undefined);
+//    ^^^^^^^^^^^^ (bool)(undefined)

@@ -1870,18 +1870,16 @@ pub fn coerce(
     const inst_ty = ip.indexToKey(inst).typeOf();
     if (dest_ty == inst_ty) return inst;
 
-    const unknown_value = try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
-
     // TODO add typed undefined value
-    if (inst_ty == .undefined_type) return unknown_value;
+    if (inst_ty == .undefined_type) return try ip.get(gpa, .{ .undefined_value = .{ .ty = dest_ty } });
 
     const inst_ty_key = ip.indexToKey(inst_ty);
     const dest_key = ip.indexToKey(dest_ty);
     assert(dest_key.typeOf() == .type_type);
-    if (dest_key == .unknown_value) return unknown_value;
+    if (dest_key == .unknown_value) return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
 
     var in_memory_result = try ip.coerceInMemoryAllowed(gpa, arena, dest_ty, inst_ty, false, builtin.target);
-    if (in_memory_result == .ok) return unknown_value;
+    if (in_memory_result == .ok) return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
 
     switch (dest_key.zigTypeTag()) {
         .Optional => optional: {
@@ -1893,7 +1891,7 @@ pub fn coerce(
             // TODO cast from ?*T and ?[*]T to ?*anyopaque
             // but don't do it if the source type is a double pointer
             if (dest_key.optional_type.payload_type == .anyopaque_type) {
-                return unknown_value; // TODO
+                return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } }); // TODO
             }
 
             // T to ?T
@@ -1927,7 +1925,7 @@ pub fn coerce(
                 if (try ip.coerceInMemoryAllowed(gpa, arena, array_elem_ty, ptr_elem_ty, dest_info.is_const, target) != .ok) {
                     break :single_item;
                 }
-                return unknown_value;
+                return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
                 // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
             }
 
@@ -1961,7 +1959,7 @@ pub fn coerce(
                     break :src_array_ptr;
                 }
 
-                return unknown_value;
+                return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
                 // switch (dest_info.size) {
                 //     // *[N]T to []T
                 //     .Slice => return ip.coerceArrayPtrToSlice(gpa, arena, dest_ty, inst),
@@ -1981,7 +1979,7 @@ pub fn coerce(
                 if (try ip.coerceInMemoryAllowed(gpa, arena, dest_info.elem_type, src_elem_ty, dest_info.is_const, target) != .ok) {
                     break :src_c_ptr;
                 }
-                return unknown_value;
+                return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
                 // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
             }
 
@@ -1997,11 +1995,11 @@ pub fn coerce(
                     } };
                     break :pointer;
                 }
-                return unknown_value;
+                return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
                 // return ip.coerceCompatiblePtrs(gpa, arena, dest_ty, inst);
             }
 
-            return unknown_value;
+            return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
         },
         .Int, .ComptimeInt => switch (inst_ty_key.zigTypeTag()) {
             .Float, .ComptimeFloat => @panic("TODO"),
@@ -2025,7 +2023,7 @@ pub fn coerce(
                         std.debug.panic("expected {d} array elements; found 0", .{len});
                     }
                     // TODO
-                    return unknown_value;
+                    return try ip.get(gpa, .{ .unknown_value = .{ .ty = dest_ty } });
                 }
                 // TODO
                 @panic("TODO");

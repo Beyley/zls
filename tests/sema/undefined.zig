@@ -1,5 +1,5 @@
 const alpha: bool = undefined;
-//    ^^^^^ (bool)((unknown value))
+//    ^^^^^ (bool)(undefined)
 
-const beta: bool = undefined == undefined;
-//    ^^^^ (bool)((unknown value))
+const beta = @as(bool, undefined);
+//    ^^^^ (bool)(undefined)
